@@ -1,0 +1,149 @@
+/* Wireless Notice Board - ESP8266 + 16x2 I2C LCD
+   - Hosts a simple webpage to set the message.
+   - Displays message on the LCD (and auto-scrolls if longer).
+*/
+
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <LiquidCrystal_I2C.h>
+
+const char* ssid = "YOUR_SSID";
+const char* password = "YOUR_PASSWORD";
+
+// Web server on port 80
+ESP8266WebServer server(80);
+
+// Set your LCD address (often 0x27 or 0x3F)
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+String notice = "Welcome!";   // initial message
+unsigned long lastScroll = 0;
+int scrollPos = 0;
+int scrollDelay = 300; // ms between shifts
+
+// HTML page served to user
+String pageHTML() {
+  String page = "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'/>";
+  page += "<title>Wireless Notice Board</title></head><body>";
+  page += "<h3>Wireless Notice Board</h3>";
+  page += "<form action='/set' method='POST'>";
+  page += "<input name='msg' style='width:80%' maxlength='200' placeholder='Enter notice text' />";
+  page += "<br/><br/><input type='submit' value='Update Notice' /></form>";
+  page += "<p>Current notice:<br/><b>" + notice + "</b></p>";
+  page += "</body></html>";
+  return page;
+}
+
+void handleRoot() {
+  server.send(200, "text/html", pageHTML());
+}
+
+void handleSet() {
+  if (server.hasArg("msg")) {
+    String m = server.arg("msg");
+    m.trim();
+    if (m.length() == 0) m = " "; // avoid empty
+    notice = m;
+    // reset scrolling
+    scrollPos = 0;
+    lastScroll = millis();
+    server.sendHeader("Location", "/");
+    server.send(303, "text/plain", "Updated");
+  } else {
+    server.send(400, "text/plain", "Missing msg");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Connecting...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to WiFi");
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 30) {
+    delay(500);
+    Serial.print(".");
+    tries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Connected, IP: ");
+    Serial.println(WiFi.localIP());
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("IP:");
+    lcd.setCursor(3,0);
+    lcd.print(WiFi.localIP().toString());
+    delay(1200);
+  } else {
+    Serial.println();
+    Serial.println("Failed to connect");
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("WiFi Failed");
+    // still continue; user can connect via Serial or change credentials
+  }
+
+  // start server routes
+  server.on("/", handleRoot);
+  server.on("/set", HTTP_POST, handleSet);
+  server.begin();
+  Serial.println("HTTP server started");
+  lastScroll = millis();
+  lcd.clear();
+}
+
+void loop() {
+  server.handleClient();
+
+  // Display logic:
+  // If message fits in 16 chars per line, show plain.
+  // Otherwise, scroll horizontally on line 1 then line 2 (simple approach).
+  int lineLen = 16;
+  unsigned long now = millis();
+
+  if (notice.length() <= lineLen*2) {
+    // Try to split into two lines
+    lcd.clear();
+    if (notice.length() <= lineLen) {
+      lcd.setCursor(0,0);
+      lcd.print(notice);
+    } else {
+      String l1 = notice.substring(0, lineLen);
+      String l2 = notice.substring(lineLen);
+      lcd.setCursor(0,0);
+      lcd.print(l1);
+      lcd.setCursor(0,1);
+      lcd.print(l2);
+    }
+  } else {
+    // scrolling mode: combine message with spaces
+    String scrollText = notice + "    "; // gap
+    int totalLen = scrollText.length();
+    if (now - lastScroll >= scrollDelay) {
+      lastScroll = now;
+      // display a 16x2 window starting at scrollPos
+      // We'll show first 16 chars in row 0, next 16 in row1
+      String window = "";
+      for (int i = 0; i < 32; i++) {
+        int idx = (scrollPos + i) % totalLen;
+        window += scrollText[idx];
+      }
+      String r1 = window.substring(0,16);
+      String r2 = window.substring(16,32);
+      lcd.clear();
+      lcd.setCursor(0,0); lcd.print(r1);
+      lcd.setCursor(0,1); lcd.print(r2);
+
+      scrollPos = (scrollPos + 1) % totalLen;
+    }
+  }
+}
